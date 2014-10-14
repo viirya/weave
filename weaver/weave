@@ -245,6 +245,18 @@ rest_call() {
     fi
 }
 
+# Perform operation $1 on container ID $2 to local DNS database at address $3 
+# This function is only called where we know $2 is a valid container name
+tell_dns() {
+    # get the long form of the container ID
+    CONTAINER=$(docker inspect --format '{{.Id}}' $2 2>/dev/null)
+    # extract IP address and routing prefix from CIDR
+    WEAVE_ADDR_IP=$(echo $3 | sed -e 's/\([^/]*\)\/\(.*\)/\1/')
+    WEAVE_ADDR_PR=$(echo $3 | sed -e 's/\([^/]*\)\/\(.*\)/\2/')
+    MORE_ARGS=$(docker inspect --format '--data-urlencode local_ip={{ .NetworkSettings.IPAddress }} --data-urlencode fqdn={{ .Config.Hostname }}.{{ .Config.Domainname }}' $CONTAINER 2>/dev/null) && true
+    rest_call $1 weavedns 6785/name/$CONTAINER/$WEAVE_ADDR_IP --data-urlencode "routing_prefix=$WEAVE_ADDR_PR" $MORE_ARGS
+}
+
 case "$COMMAND" in
     launch)
         [ $# -gt 0 ] || usage
@@ -281,7 +293,10 @@ case "$COMMAND" in
         # additional parameters, such as resource limits, to docker
         # when launching the weave container.
         CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS $IMAGE -name $MACADDR "$@")
+        DNS_CONTAINER=$(docker run --privileged -d --name=weavedns zettio/weavedns)
         with_container_netns attach $CONTAINER $IPADDR eth0
+        # Hacky hard-coded address for DNS
+        with_container_netns attach $DNS_CONTAINER "10.0.0.2/24" $CONTAINER_IFNAME
         echo $CONTAINER
         ;;
     status)
@@ -302,18 +317,23 @@ case "$COMMAND" in
         IPADDR=$1
         shift 1
         create_bridge
-        CONTAINER=$(docker run -d "$@")
+        DNS_IP=$(docker inspect --format '{{ .NetworkSettings.IPAddress }}' weavedns)
+        CONTAINER=$(docker run --dns $DNS_IP -d "$@")
+        echo "docker run --dns $DNS_IP -d $@"
         with_container_netns attach $CONTAINER $IPADDR $CONTAINER_IFNAME
+        tell_dns PUT $CONTAINER $IPADDR
         echo $CONTAINER
         ;;
     attach)
         [ $# -gt 1 ] || usage
         create_bridge
         with_container_netns attach $2 $1 $CONTAINER_IFNAME
+        tell_dns PUT $2 $1
         ;;
     detach)
         [ $# -gt 1 ] || usage
         with_container_netns detach $2 $1
+        tell_dns DELETE $2 $1
         ;;
     expose)
         [ $# -gt 0 ] || usage
@@ -340,6 +360,7 @@ case "$COMMAND" in
             echo "Weave is not running."
         fi
         docker rm -f weave >/dev/null 2>&1 || true
+        docker rm -f weavedns >/dev/null 2>&1 || true
         check_command_and_run conntrack conntrack -D -p udp --dport 6783 >/dev/null 2>&1 || true
         stop_masquerading
         ;;
