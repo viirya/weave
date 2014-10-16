@@ -4,6 +4,7 @@ set -e
 usage() {
     echo "Usage:"
     echo "weave launch <ipaddr>/<subnet-cidr> [-password <password>] <peer_host> ..."
+    echo "weave launch-dns <ipaddr>/<subnet-cidr>"
     echo "weave run    <ipaddr>/<subnet-cidr> <docker run args> ..."
     echo "weave attach <ipaddr>/<subnet-cidr> <container_id>"
     echo "weave detach <ipaddr>/<subnet-cidr> <container_id>"
@@ -30,6 +31,7 @@ command_exists () {
 [ $# -gt 0 ] || usage
 
 IMAGE=zettio/weave
+DNSIMAGE=zettio/weavedns
 BRIDGE=weave
 CONTAINER_IFNAME=ethwe
 MTU=65535
@@ -283,7 +285,7 @@ case "$COMMAND" in
         [ $# -gt 0 ] || usage
         IPADDR=$1
         shift 1
-        check_container weave $IMAGE
+        check_not_running weave $IMAGE
         create_bridge
         stop_masquerading
         setup_masquerading $IPADDR
@@ -298,10 +300,17 @@ case "$COMMAND" in
         # additional parameters, such as resource limits, to docker
         # when launching the weave container.
         CONTAINER=$(docker run --privileged -d --name=weave -p 6783:6783/tcp -p 6783:6783/udp $WEAVE_DOCKER_ARGS $IMAGE -name $MACADDR "$@")
-        DNS_CONTAINER=$(docker run --privileged -d --name=weavedns zettio/weavedns)
         with_container_netns attach $CONTAINER $IPADDR eth0
-        # Hacky hard-coded address for DNS
-        with_container_netns attach $DNS_CONTAINER "10.0.0.2/24" $CONTAINER_IFNAME
+        echo $CONTAINER
+        ;;
+    launch-dns)
+        [ $# -gt 0 ] || usage
+        IPADDR=$1
+        shift 1
+        check_not_running weavedns $DNSIMAGE
+        create_bridge
+        CONTAINER=$(docker run -d --name=weavedns -v /var/run/docker.sock:/var/run/docker.sock $DNSIMAGE "$@")
+        with_container_netns attach $CONTAINER $IPADDR $CONTAINER_IFNAME
         echo $CONTAINER
         ;;
     status)
