@@ -257,28 +257,33 @@ tell_dns() {
     rest_call $1 weavedns 6785/name/$CONTAINER/$WEAVE_ADDR_IP --data-urlencode "routing_prefix=$WEAVE_ADDR_PR" $MORE_ARGS
 }
 
+# Check that a container named $1 with image $2 is not running
+check_not_running() {
+    case $(docker inspect --format '{{ .State.Running }} {{ .Config.Image }}' $1 2>/dev/null) in
+        "true $2")
+            echo "$1 is already running." >&2
+            exit 1
+            ;;
+        "false $2")
+            docker rm $1 >/dev/null
+            ;;
+        true*)
+            echo "Found another running container named '$1'. Aborting." >&2
+            exit 1
+            ;;
+        false*)
+            echo "Found another container named '$1'. Aborting." >&2
+            exit 1
+            ;;
+    esac
+}
+
 case "$COMMAND" in
     launch)
         [ $# -gt 0 ] || usage
         IPADDR=$1
         shift 1
-        case $(docker inspect --format '{{ .State.Running }} {{ .Config.Image }}' weave 2>/dev/null) in
-            "true $IMAGE")
-                echo "Weave is already running." >&2
-                exit 1
-                ;;
-            "false $IMAGE")
-                docker rm weave >/dev/null
-                ;;
-            true*)
-                echo "Found another running container named 'weave'. Aborting." >&2
-                exit 1
-                ;;
-            false*)
-                echo "Found another container named 'weave'. Aborting." >&2
-                exit 1
-                ;;
-        esac
+        check_container weave $IMAGE
         create_bridge
         stop_masquerading
         setup_masquerading $IPADDR
